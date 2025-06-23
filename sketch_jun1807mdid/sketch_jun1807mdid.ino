@@ -171,12 +171,9 @@ void showOptionsMenu();
 // Power Management
 void enterLightSleep();
 
-
 /**************************************************************************************************
  * SETUP: Runs once on boot. Initializes all hardware and software components.
  **************************************************************************************************/
-
-
 void setup() {
   // Serial.begin(115200); // For debugging purposes
   
@@ -209,12 +206,9 @@ void setup() {
   showMainMenu();
 }
 
-
 /**************************************************************************************************
  * LOOP: Main program cycle. Handles buttons, fingerprint scanning, and power management.
  **************************************************************************************************/
-
-
 void loop() {
   handleButtons(); // لمعالجة ضغطات الأزرار وتحديث lastActivityTime
    if (WiFi.status() == WL_CONNECTED) { // حدث الوقت فقط لو فيه اتصال واي فاي
@@ -262,11 +256,9 @@ void loop() {
   }
 }
 
-
 /**************************************************************************************************
- *                                  Core System & UI Functions                                    *
+ * Core System & UI Functions                                    *
  **************************************************************************************************/
-
 
 /**
  * @brief Initializes LCD, SD Card, Fingerprint Sensor, and Buttons.
@@ -426,7 +418,7 @@ void updateActivityTime() {
 
 
 /**************************************************************************************************
- *                                   Button Handling Logic                                        *
+ * Button Handling Logic                                        *
  **************************************************************************************************/
 
 /**
@@ -492,9 +484,8 @@ void handleButtons() {
 
 
 /**************************************************************************************************
- *                                   WiFi & Server Functions                                      *
+ * WiFi & Server Functions                                      *
  **************************************************************************************************/
-
 
 /**
  * @brief Sets up WiFi. Can start a configuration portal if requested.
@@ -599,11 +590,30 @@ bool logToServer(const String& endpoint, const String& payload) {
 
 
 /**************************************************************************************************
- *                                Fingerprint Operation Functions                                 *
+ * Fingerprint Operation Functions                                 *
  **************************************************************************************************/
 
 
 /**
+<<<<<<< HEAD
+=======
+ * @brief Finds the next available (empty) ID slot on the fingerprint sensor.
+ * @return The first available ID (0-127), or 128 if all slots are full.
+ */
+uint16_t findNextAvailableID() {
+
+  for (uint16_t id = 1; id < finger.templateCount; id++) { 
+    if (finger.loadModel(id) != FINGERPRINT_OK) {
+      // Serial.print("Next available ID from sensor is: ");
+      // Serial.println(id);
+      return id; // Return the first unused ID we find.
+    }
+  }
+  return 128;
+}
+
+/**
+>>>>>>> parent of c65b54b (server get)
  * @brief Continuously scans for a fingerprint and logs attendance if a match is found.
  */
 void scanForFingerprint() {
@@ -643,6 +653,7 @@ void scanForFingerprint() {
   }
 }
 
+
 /**
  * @brief Manages the multi-step process of enrolling a new user.
  */
@@ -660,6 +671,7 @@ void enrollNewFingerprint() {
 
   // 2. لو فيه إنترنت، حاول تجيب الـ ID من السيرفر
   displayMessage("Enrollment:", "Fetching ID...", 0); // رسالة أثناء جلب ال ID
+<<<<<<< HEAD
   newId = fetchLastIdFromServer() +1;
   /*
   if (newId > finger.templateCount) {
@@ -668,6 +680,28 @@ void enrollNewFingerprint() {
       return;
   }*/
   updateActivityTime();
+=======
+  newId = fetchLastIdFromServer() + 1;
+
+  // 3. تحقق من صلاحية الـ ID المسترجع من السيرفر
+  if (newId == 1) { // لو fetchLastIdFromServer رجعت 0 (فشل أو مفيش IDs صالحة من السيرفر)
+    displayMessage("Server Error", "Cannot get ID.", 2000);
+    showMainMenu();
+    return; // إيقاف العملية لو السيرفر فيه مشكلة
+  }
+  
+  // ممكن نضيف تحقق إضافي هنا لو ال ID المسترجع من السيرفر كبير جداً
+  // يعني لو السيرفر رجع ID غير منطقي (مثلاً أكبر من أقصى عدد بصمات بيدعمه الحساس)
+  if (newId >= finger.templateCount) {
+      displayMessage("server Error", "ID Invalid", 2000);
+      showMainMenu();
+      return;
+  }
+
+  // إذا وصلنا لهنا، يبقى الـ WiFi متصل والسيرفر رجع ID صالح
+  // هنكمل عملية تسجيل البصمة بشكل طبيعي باستخدام الـ newId اللي جبناه من السيرفر
+
+>>>>>>> parent of c65b54b (server get)
   displayMessage("Place finger", "ID: " + String(newId));
   if (getFingerprintImage(1) != FINGERPRINT_OK) {
     displayMessage("Enroll Failed", "Try Again.", 2000); 
@@ -682,13 +716,20 @@ void enrollNewFingerprint() {
     return;
   }
 
+<<<<<<< HEAD
   displayMessage("Creating model", "Please wait...",1000);
+=======
+  displayMessage("Creating model", "Please wait...");
+  if (createAndStoreModel(newId) == FINGERPRINT_OK) {
+    displayMessage("Enrolled!", "ID: " + String(newId), 2000);
+>>>>>>> parent of c65b54b (server get)
 
     StaticJsonDocument<64> doc;
     doc["id"] = newId;
     String payload;
     serializeJson(doc, payload);
     
+<<<<<<< HEAD
   displayMessage("Syncing to Server", "Please wait...", 0);
   if (WiFi.status() == WL_CONNECTED && logToServer("/api/SensorData", payload)) {
     if (createAndStoreModel(newId) == FINGERPRINT_OK) {
@@ -699,6 +740,18 @@ void enrollNewFingerprint() {
     }
   } else {
     displayMessage("Server Sync Failed", "Enrollment Blocked", 3000);
+=======
+    // تأكد أن ال endpoint صحيح ("/api/SensorData/enroll")
+    if(!logToServer("/api/SensorData/enroll", payload)) {
+      // لو السيرفر فشل في تسجيل البصمة (مثلاً فيه مشكلة في الـ API)،
+      // ممكن نعرض رسالة تحذير لأن البصمة موجودة محليًا لكن مش على السيرفر
+      displayMessage("Server Sync Failed", "Contact Admin", 3000); 
+    } else {
+        displayMessage("Synced to Server", "", 2000);
+    }
+  } else {
+    displayMessage("Enroll Failed", "Error storing", 2000);
+>>>>>>> parent of c65b54b (server get)
   }
   showMainMenu();
 }
@@ -751,9 +804,8 @@ uint8_t createAndStoreModel(uint16_t id) {
 
 
 /**************************************************************************************************
- *                               SD Card and Offline Logging                                      *
+ * SD Card and Offline Logging                                      *
  **************************************************************************************************/
-
 
 /**
  * @brief Logs an attendance record to the SD card.
@@ -819,11 +871,9 @@ void syncOfflineLogs() {
   }
 }
 
-
 /**************************************************************************************************
- *                                          Menu Actions                                          *
+ * Menu Actions                                              *
  **************************************************************************************************/
-
 
 /**
  * @brief Shows the options menu on the LCD.
@@ -833,7 +883,6 @@ void showOptionsMenu() {
   displayMessage("Hold btn1: Clear", "Timeout: 10s");
   updateActivityTime(); // Reset timer for menu timeout
 }
-
 /**
  * @brief Shows the main menu on the LCD.
  */
@@ -842,7 +891,6 @@ void showMainMenu() {
   displayMessage("btn1:add finger", "btn2:manage wifi ");
   updateActivityTime();
 }
-
 /**
  * @brief Contacts the server for authorization and then deletes all fingerprint data.
  */
@@ -858,7 +906,7 @@ void attemptToClearAllData() {
   HTTPClient http;
   String url = String(SERVER_HOST) + "/api/SensorData/clear";
   http.begin(url);
-  int httpCode = http.POST("");
+  int httpCode = http.GET();
   http.end();
   
   if (httpCode >= 200 && httpCode < 300) {
@@ -873,5 +921,9 @@ void attemptToClearAllData() {
   }
   
   showMainMenu();
+<<<<<<< HEAD
   updateActivityTime();
 }
+=======
+}
+>>>>>>> parent of c65b54b (server get)
