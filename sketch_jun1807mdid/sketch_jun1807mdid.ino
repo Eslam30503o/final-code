@@ -112,9 +112,12 @@ void showOptionsMenu();
 // Power Management
 void enterLightSleep();
 
+
 /**************************************************************************************************
  * SETUP: Runs once on boot. Initializes all hardware and software components.
  **************************************************************************************************/
+
+
 void setup() {
   // Serial.begin(115200); // For debugging purposes
   
@@ -136,9 +139,12 @@ void setup() {
   showMainMenu();
 }
 
+
 /**************************************************************************************************
  * LOOP: Main program cycle. Handles buttons, fingerprint scanning, and power management.
  **************************************************************************************************/
+
+
 void loop() {
   handleButtons();
 
@@ -159,9 +165,11 @@ void loop() {
   }
 }
 
+
 /**************************************************************************************************
- * Core System & UI Functions                                    *
+ *                                  Core System & UI Functions                                    *
  **************************************************************************************************/
+
 
 /**
  * @brief Initializes LCD, SD Card, Fingerprint Sensor, and Buttons.
@@ -251,7 +259,7 @@ void enterLightSleep() {
 
 
 /**************************************************************************************************
- * Button Handling Logic                                        *
+ *                                   Button Handling Logic                                        *
  **************************************************************************************************/
 
 /**
@@ -317,8 +325,9 @@ void handleButtons() {
 
 
 /**************************************************************************************************
- * WiFi & Server Functions                                      *
+ *                                   WiFi & Server Functions                                      *
  **************************************************************************************************/
+
 
 /**
  * @brief Sets up WiFi. Can start a configuration portal if requested.
@@ -422,14 +431,14 @@ bool logToServer(const String& endpoint, const String& payload) {
 
 
 /**************************************************************************************************
- * Fingerprint Operation Functions                                 *
+ *                                Fingerprint Operation Functions                                 *
  **************************************************************************************************/
 
 
 /**
  * @brief Finds the next available (empty) ID slot on the fingerprint sensor.
  * @return The first available ID (0-127), or 128 if all slots are full.
- */
+ 
 uint16_t findNextAvailableID() {
 
   for (uint16_t id = 1; id < finger.templateCount; id++) { 
@@ -440,7 +449,7 @@ uint16_t findNextAvailableID() {
     }
   }
   return 128;
-}
+}*/
 
 /**
  * @brief Continuously scans for a fingerprint and logs attendance if a match is found.
@@ -482,7 +491,6 @@ void scanForFingerprint() {
   }
 }
 
-
 /**
  * @brief Manages the multi-step process of enrolling a new user.
  */
@@ -503,7 +511,7 @@ void enrollNewFingerprint() {
   newId = fetchLastIdFromServer() + 1;
 
   // 3. تحقق من صلاحية الـ ID المسترجع من السيرفر
-  if (newId == 1) { // لو fetchLastIdFromServer رجعت 0 (فشل أو مفيش IDs صالحة من السيرفر)
+ /* if (newId == 0) { // لو fetchLastIdFromServer رجعت 0 (فشل أو مفيش IDs صالحة من السيرفر)
     displayMessage("Server Error", "Cannot get ID.", 2000);
     showMainMenu();
     return; // إيقاف العملية لو السيرفر فيه مشكلة
@@ -511,11 +519,11 @@ void enrollNewFingerprint() {
   
   // ممكن نضيف تحقق إضافي هنا لو ال ID المسترجع من السيرفر كبير جداً
   // يعني لو السيرفر رجع ID غير منطقي (مثلاً أكبر من أقصى عدد بصمات بيدعمه الحساس)
-  if (newId >= finger.templateCount) {
+  if (newId > finger.templateCount) {
       displayMessage("server Error", "ID Invalid", 2000);
       showMainMenu();
       return;
-  }
+  }*/
 
   // إذا وصلنا لهنا، يبقى الـ WiFi متصل والسيرفر رجع ID صالح
   // هنكمل عملية تسجيل البصمة بشكل طبيعي باستخدام الـ newId اللي جبناه من السيرفر
@@ -534,9 +542,8 @@ void enrollNewFingerprint() {
     return;
   }
 
-  displayMessage("Creating model", "Please wait...");
-  if (createAndStoreModel(newId) == FINGERPRINT_OK) {
-    displayMessage("Enrolled!", "ID: " + String(newId), 2000);
+  displayMessage("Creating model", "Please wait...",10);
+  
 
     // بعد ما تم التسجيل بنجاح على الحساس، نبعت ال ID للسيرفر
     // في المنطق الجديد، إحنا متأكدين إن فيه WiFi والسيرفر شغال
@@ -545,16 +552,19 @@ void enrollNewFingerprint() {
     String payload;
     serializeJson(doc, payload);
     
-    // تأكد أن ال endpoint صحيح ("/api/SensorData/enroll")
-    if(!logToServer("/api/SensorData/enroll", payload)) {
-      // لو السيرفر فشل في تسجيل البصمة (مثلاً فيه مشكلة في الـ API)،
-      // ممكن نعرض رسالة تحذير لأن البصمة موجودة محليًا لكن مش على السيرفر
-      displayMessage("Server Sync Failed", "Contact Admin", 3000); 
+  displayMessage("Syncing to Server", "Please wait...", 0);
+  if (WiFi.status() == WL_CONNECTED && logToServer("/api/SensorData", payload)) {
+    // لو تم الإرسال للسيرفر بنجاح، يبقى نكمل ونسجلها على الحساس
+    if (createAndStoreModel(newId) == FINGERPRINT_OK) {
+      displayMessage("Enrolled!", "ID: " + String(newId), 2000);
+      displayMessage("Synced to Server", "", 2000);
     } else {
-        displayMessage("Synced to Server", "", 2000);
+      displayMessage("Enroll Failed", "Error storing", 2000);
     }
   } else {
-    displayMessage("Enroll Failed", "Error storing", 2000);
+    // لو لم يتم الإرسال للسيرفر (إما مفيش نت فجأة أو logToServer فشلت)
+    displayMessage("Server Sync Failed", "Enrollment Blocked", 3000);
+    // في هذه الحالة، لم يتم استدعاء createAndStoreModel(newId)، وبالتالي البصمة لن تسجل على الحساس.
   }
   showMainMenu();
 }
@@ -605,8 +615,9 @@ uint8_t createAndStoreModel(uint16_t id) {
 
 
 /**************************************************************************************************
- * SD Card and Offline Logging                                      *
+ *                               SD Card and Offline Logging                                      *
  **************************************************************************************************/
+
 
 /**
  * @brief Logs an attendance record to the SD card.
@@ -672,9 +683,11 @@ void syncOfflineLogs() {
   }
 }
 
+
 /**************************************************************************************************
- * Menu Actions                                              *
+ *                                          Menu Actions                                          *
  **************************************************************************************************/
+
 
 /**
  * @brief Shows the options menu on the LCD.
@@ -684,6 +697,7 @@ void showOptionsMenu() {
   displayMessage("Hold btn1: Clear", "Timeout: 10s");
   lastActivityTime = millis(); // Reset timer for menu timeout
 }
+
 /**
  * @brief Shows the main menu on the LCD.
  */
@@ -692,6 +706,7 @@ void showMainMenu() {
   displayMessage("btn1:add finger", "btn2:manage wifi ");
   lastActivityTime = millis();
 }
+
 /**
  * @brief Contacts the server for authorization and then deletes all fingerprint data.
  */
@@ -707,7 +722,7 @@ void attemptToClearAllData() {
   HTTPClient http;
   String url = String(SERVER_HOST) + "/api/SensorData/clear";
   http.begin(url);
-  int httpCode = http.GET();
+  int httpCode = http.POST("");
   http.end();
   
   if (httpCode >= 200 && httpCode < 300) {
