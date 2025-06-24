@@ -544,7 +544,7 @@ void enrollNewFingerprint() {
   // 5. محاولة مزامنة الـ ID مع الخادم قبل التخزين على المستشعر
   StaticJsonDocument<64> doc;
   doc["FingerID"] = newId;             // استخدام FingerID بدلاً من id
-  doc["Timestamp"] = timestampString;  // استخدام String التاريخ والوقت بدلاً من Unix timestamp
+  //doc["Timestamp"] = timestampString;  // استخدام String التاريخ والوقت بدلاً من Unix timestamp
   String payload;
   serializeJson(doc, payload);
       
