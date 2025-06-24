@@ -28,8 +28,6 @@
 #include <LiquidCrystal.h>
 #include <Adafruit_Fingerprint.h>
 #include <RTClib.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
 #include <SD.h>
 #include <SPI.h>
 
@@ -57,74 +55,18 @@ const uint8_t SD_CS_PIN = 5;
 const uint32_t DEBOUNCE_DELAY = 50;        // 50 ms for button debouncing
 const uint32_t LONG_PRESS_DELAY = 1000;    // 1000 ms = 1 second for a long press
 const uint32_t MENU_TIMEOUT = 10000;       // 10000 ms = 10 seconds for menu timeout
-const uint32_t FULL_SLEEP_TIMEOUT = 300000UL; ;       // 15000 ms = 15 seconds of inactivity before light sleep fully sleep
-const uint32_t DISPLAY_ON_IDLE_TIMEOUT = 30000UL;  // 15 seconds: The length of time the device displays the time and animation after the activity has ended
-const uint32_t ANIMATION_FRAME_DURATION = 200;  // 200ms The duration of each frame in the animation in milliseconds
-const int TOTAL_ANIMATION_FRAMES = 4;           // any number of frames you want for your animation.
-unsigned long lastAnimationUpdateTime = 0;   // Variable to track the last time the animation frame was updated.
-int currentAnimationFrame = 0;               // currentAnimationFrame
-
-// --- Custom Characters Definitions ---
-// الابتسامة
-byte smiley[8] = {
-  0b00000,
-  0b00000,
-  0b01010,
-  0b00000,
-  0b00000,
-  0b10001,
-  0b01110,
-  0b00000
-};
-
-// العبوس
-byte frownie[8] = {
-  0b00000,
-  0b00000,
-  0b01010,
-  0b00000,
-  0b00000,
-  0b00000,
-  0b01110,
-  0b10001
-};
-
-// الأذرع لأسفل
-byte armsDown[8] = {
-  0b00100,
-  0b01010,
-  0b00100,
-  0b00100,
-  0b01110,
-  0b10101,
-  0b00100,
-  0b01010
-};
-
-// الأذرع لأعلى
-byte armsUp[8] = {
-  0b00100,
-  0b01010,
-  0b00100,
-  0b10101,
-  0b01110,
-  0b00100,
-  0b00100,
-  0b01010
-};
+const uint32_t SLEEP_TIMEOUT = 15000;       // 15000 ms = 15 seconds of inactivity before light sleep
 
 // --- GLOBAL OBJECTS ---
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 HardwareSerial fingerSerial(2); // Use Serial Port 2 for the fingerprint sensor
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&fingerSerial);
 RTC_DS3231 rtc;
-WiFiUDP ntpUDP;
-NTPClient client(ntpUDP, NTP_SERVER, GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC);
+
 // --- STATE MANAGEMENT ---
 enum class MenuState {
   MAIN_MENU,
-  OPTIONS_MENU,
-  DISPLAY_IDLE_MODE
+  OPTIONS_MENU
 };
 
 MenuState currentMenuState = MenuState::MAIN_MENU;
@@ -142,8 +84,7 @@ bool btn2Held = false;
 // Core System & UI
 void displayMessage(String line1, String line2 = "", int delayMs = 0);
 void handleButtons();
-void showCurrentTimeAndAnimation(); 
-void updateActivityTime();
+uint16_t findNextAvailableID();
 
 // WiFi & Server
 void setupWiFi(bool portal);
@@ -171,26 +112,14 @@ void showOptionsMenu();
 // Power Management
 void enterLightSleep();
 
-
 /**************************************************************************************************
  * SETUP: Runs once on boot. Initializes all hardware and software components.
  **************************************************************************************************/
-
-
 void setup() {
-  // Serial.begin(115200); // For debugging purposes
+ Serial.begin(115200); // For debugging purposes
   
   setupModules();
   setupRtcAndSyncTime();
-
-  lcd.begin(16, 2);
-  lcd.print("Initializing...");
-  
-  // *** إضافة إنشاء الأشكال المخصصة هنا ***
-  lcd.createChar(0, smiley);    // الابتسامة هتكون رقم 0
-  lcd.createChar(1, frownie);   // العبوس هيكون رقم 1
-  lcd.createChar(2, armsDown);  // الأذرع لأسفل هتكون رقم 2
-  lcd.createChar(3, armsUp);    // الأذرع لأعلى هتكون رقم 3
   
   // Initial WiFi connection attempt (non-blocking)
   displayMessage("Connecting WiFi", "Please wait...");
@@ -198,8 +127,6 @@ void setup() {
   
   if (WiFi.status() == WL_CONNECTED) {
     displayMessage("WiFi Connected!", WiFi.localIP().toString(), 2000);
-    client.begin(); 
-    client.update();
     syncOfflineLogs(); // Sync any logs stored on SD card
   } else {
     displayMessage("Offline Mode", "RTC Time Active", 2000);
@@ -209,64 +136,32 @@ void setup() {
   showMainMenu();
 }
 
-
 /**************************************************************************************************
  * LOOP: Main program cycle. Handles buttons, fingerprint scanning, and power management.
  **************************************************************************************************/
-
-
 void loop() {
-  handleButtons(); // لمعالجة ضغطات الأزرار وتحديث lastActivityTime
-   if (WiFi.status() == WL_CONNECTED) { // حدث الوقت فقط لو فيه اتصال واي فاي
-    client.update(); 
-  }
-  if (currentMenuState == MenuState::MAIN_MENU && (millis() - lastActivityTime <= DISPLAY_ON_IDLE_TIMEOUT)) {
-      scanForFingerprint(); 
-  }
+  handleButtons();
 
-  else if (millis() - lastActivityTime > DISPLAY_ON_IDLE_TIMEOUT &&
-           millis() - lastActivityTime <= FULL_SLEEP_TIMEOUT) {
-    
-    if (currentMenuState != MenuState::DISPLAY_IDLE_MODE) {
-        currentMenuState = MenuState::DISPLAY_IDLE_MODE; 
-    }
-    showCurrentTimeAndAnimation(); 
-
-    // في هذه الحالة، يمكنك توفير بعض الطاقة عن طريق إيقاف تشغيل الواي فاي إذا لم تكن بحاجة إليه
-    // if (WiFi.status() == WL_CONNECTED) {
-    //   WiFi.disconnect(true);
-    //   WiFi.mode(WIFI_OFF);
-    // }
+  // Only scan for fingerprints when in the main menu and no buttons are being pressed.
+  if (currentMenuState == MenuState::MAIN_MENU && !btn1PressTime && !btn2PressTime) {
+    scanForFingerprint();
   }
 
-  // الحالة الثالثة: وضع النوم الخفيف الكامل (Full Light Sleep)
-  // إذا تجاوز millis() - lastActivityTime قيمة FULL_SLEEP_TIMEOUT، فهذا يعني خمولاً طويلاً.
-  else if (millis() - lastActivityTime > FULL_SLEEP_TIMEOUT) {
-    // يمكنك عرض رسالة سريعة هنا قبل الدخول في النوم
-    displayMessage("Entering full sleep", "Bye bye!", 2000);
-    lcd.noDisplay(); // إطفاء الشاشة بالكامل لتوفير الطاقة القصوى قبل النوم
-
-    enterLightSleep(); // <--- هنا يتم استدعاء الدالة لإدخال الجهاز في وضع النوم الخفيف الفعلي
-    // عند الاستيقاظ من enterLightSleep()، يستكمل الكود التنفيذ من بعد هذا السطر.
-    // ويتم تحديث lastActivityTime و reset للحالة بعد الاستيقاظ:
-    updateActivityTime(); // إعادة ضبط مؤقتات النشاط بعد الاستيقاظ
-    showMainMenu();       // للعودة إلى القائمة الرئيسية
-  }
-
-  // التحقق من انتهاء مهلة القائمة في قائمة الخيارات (لا يزال هذا الجزء موجوداً في loop)
-  // يجب أن يكون هذا الشرط منفصلاً ليعمل في أي حالة.
+  // Check for menu timeout in the options menu
   if (currentMenuState == MenuState::OPTIONS_MENU && (millis() - lastActivityTime > MENU_TIMEOUT)) {
       displayMessage("Timeout", "Returning...", 1500);
       showMainMenu();
-      updateActivityTime(); // حدث وقت النشاط هنا أيضاً لكي لا يدخل في وضع الخمول مباشرة بعد العودة
+  }
+  
+  // Check for inactivity to enter light sleep
+  if (millis() - lastActivityTime > SLEEP_TIMEOUT) {
+    enterLightSleep();
   }
 }
 
-
 /**************************************************************************************************
- *                                  Core System & UI Functions                                    *
+ * Core System & UI Functions                                    *
  **************************************************************************************************/
-
 
 /**
  * @brief Initializes LCD, SD Card, Fingerprint Sensor, and Buttons.
@@ -331,74 +226,8 @@ void displayMessage(String line1, String line2, int delayMs) {
   lcd.setCursor(0, 1);
   lcd.print(line2);
   if (delayMs > 0) {
-    unsigned long startTime = millis();
-    while (millis() - startTime < delayMs) {
-      // السماح بتشغيل مهام أخرى خفيفة أثناء الانتظار
-      yield(); 
-    }
+    delay(delayMs);
   }
-}
-
-void showCurrentTimeAndAnimation() {
-  int currentHour = client.getHours();
-  int currentMinute = client.getMinutes();
-  int currentSecond = client.getSeconds();
-
-  // *** تنسيق الساعة 12 ساعة وتوسيطها ***
-  String timeString;
-  String ampm = "";
-
-  // تحويل الساعة من تنسيق 24 ساعة إلى 12 ساعة وتحديد AM/PM
-  if (currentHour >= 12) {
-    ampm = " PM";
-    if (currentHour > 12) {
-      currentHour -= 12;
-    }
-  } else {
-    ampm = " AM";
-    if (currentHour == 0) { // لو الساعة 00 (منتصف الليل) تتحول لـ 12 صباحاً
-      currentHour = 12;
-    }
-  }
-
-  // بناء سلسلة الوقت بالتنسيق HH:MM:SS AM/PM
-  timeString = (currentHour < 10 ? "0" : "") + String(currentHour) + ":" +
-               (currentMinute < 10 ? "0" : "") + String(currentMinute) + ":" +
-               (currentSecond < 10 ? "0" : "") + String(currentSecond) + ampm;
-
-  // لحساب مكان الساعة في المنتصف (16 حرف عرض الشاشة)
-  int stringLength = timeString.length();
-  int startColumn = (16 - stringLength) / 2; // (عرض الشاشة - طول السلسلة) / 2
-  lcd.clear();
-  lcd.setCursor(startColumn, 0); // في منتصف السطر الأول
-  lcd.print(timeString);
-
-  // تحديث وعرض الرسوم المتحركة
-  if (millis() - lastAnimationUpdateTime > ANIMATION_FRAME_DURATION) {
-    lcd.setCursor(15, 0); // في نهاية السطر الأول
-    switch (currentAnimationFrame) {
-      case 0:
-        lcd.write((uint8_t)0); // عرض الابتسامة (رقم 0)
-        break;
-      case 1:
-        lcd.write((uint8_t)1); // عرض العبوس (رقم 1)
-        break;
-      case 2:
-        lcd.write((uint8_t)2); // عرض الأذرع لأسفل (رقم 2)
-        break;
-      case 3:
-        lcd.write((uint8_t)3); // عرض الأذرع لأعلى (رقم 3)
-        break;
-    }
-    
-    currentAnimationFrame++;
-    if (currentAnimationFrame >= TOTAL_ANIMATION_FRAMES) { // لو وصلت لآخر إطار
-      currentAnimationFrame = 0; // ارجع لأول إطار
-    }
-    lastAnimationUpdateTime = millis();
-  }
-  lcd.setCursor(0, 1); 
-  lcd.print("Press BTN to scan ");
 }
 
 /**
@@ -406,27 +235,23 @@ void showCurrentTimeAndAnimation() {
  */
 void enterLightSleep() {
     displayMessage("Entering sleep...", "Press Btn to wake", 2000);
-    lcd.noDisplay(); // Turn off LCD backlight if controlled by a transistor
+    //lcd.noDisplay(); // Turn off LCD backlight if controlled by a transistor
 
     // Enable wakeup from either button (active LOW)
-    //esp_sleep_enable_ext1_wakeup(GPIO_NUM_34, 0); 
-   // esp_sleep_enable_ext1_wakeup(GPIO_NUM_35, 0); 
-    esp_sleep_enable_ext1_wakeup((1ULL << BUTTON_PIN1) | (1ULL << BUTTON_PIN2), ESP_EXT1_WAKEUP_ALL_LOW); // This might need adjustment depending on your button circuit (pull-up vs pull-down)
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_34, 0); 
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_35, 0); 
+    esp_sleep_enable_ext1_wakeup((1ULL << BUTTON_PIN1) || (1ULL << BUTTON_PIN2), ESP_EXT1_WAKEUP_ALL_LOW); // This might need adjustment depending on your button circuit (pull-up vs pull-down)
     esp_light_sleep_start();
 
     // --- Code execution resumes here after wakeup ---
     lcd.display();
-    //lastActivityTime = millis(); // Reset activity timer upon waking
-    //showMainMenu();
-}
-
-void updateActivityTime() {
-    lastActivityTime = millis();
+    lastActivityTime = millis(); // Reset activity timer upon waking
+    showMainMenu();
 }
 
 
 /**************************************************************************************************
- *                                   Button Handling Logic                                        *
+ * Button Handling Logic                                        *
  **************************************************************************************************/
 
 /**
@@ -492,9 +317,8 @@ void handleButtons() {
 
 
 /**************************************************************************************************
- *                                   WiFi & Server Functions                                      *
+ * WiFi & Server Functions                                      *
  **************************************************************************************************/
-
 
 /**
  * @brief Sets up WiFi. Can start a configuration portal if requested.
@@ -528,7 +352,6 @@ void setupWiFi(bool portal) {
         displayMessage("Time Synced!", "", 1500);
     }
   }
-  updateActivityTime();
 }
 
 /**
@@ -565,16 +388,26 @@ uint16_t fetchLastIdFromServer() {
  * @return True on success, false on failure.
  */
 bool syncAttendanceToServer(uint16_t id, time_t timestamp) {
-  if (WiFi.status() != WL_CONNECTED) return false;
+    if (WiFi.status() != WL_CONNECTED) return false;
 
-  StaticJsonDocument<128> doc;
-  doc["id"] = id;
-  doc["timestamp"] = timestamp;
+    DateTime entryTime(timestamp); // تحويل Unix timestamp إلى كائن DateTime
 
-  String payload;
-  serializeJson(doc, payload);
+    // تنسيق التاريخ والوقت بصيغة ISO 8601
+    String timestampString = String(entryTime.year()) + "-" +
+                            (entryTime.month() < 10 ? "0" : "") + String(entryTime.month()) + "-" +
+                            (entryTime.day() < 10 ? "0" : "") + String(entryTime.day()) + "T" +
+                            (entryTime.hour() < 10 ? "0" : "") + String(entryTime.hour()) + ":" +
+                            (entryTime.minute() < 10 ? "0" : "") + String(entryTime.minute()) + ":" +
+                            (entryTime.second() < 10 ? "0" : "") + String(entryTime.second()) + ".000Z";
 
-  return logToServer("/api/SensorData", payload);
+    StaticJsonDocument<128> doc;
+    doc["FingerID"] = id;               // استخدام FingerID بدلاً من id
+    doc["Timestamp"] = timestampString; // استخدام String التاريخ والوقت بدلاً من Unix timestamp
+
+    String payload;
+    serializeJson(doc, payload);
+
+    return logToServer("/api/SensorData", payload);
 }
 
 /**
@@ -599,9 +432,14 @@ bool logToServer(const String& endpoint, const String& payload) {
 
 
 /**************************************************************************************************
- *                                Fingerprint Operation Functions                                 *
+ * Fingerprint Operation Functions                                 *
  **************************************************************************************************/
 
+
+/**
+ * @brief Finds the next available (empty) ID slot on the fingerprint sensor.
+ * @return The first available ID (0-127), or 128 if all slots are full.
+ */
 
 /**
  * @brief Continuously scans for a fingerprint and logs attendance if a match is found.
@@ -618,7 +456,7 @@ void scanForFingerprint() {
   // Search the sensor's internal database for a match
   p = finger.fingerSearch();
   if (p == FINGERPRINT_OK) {
-    updateActivityTime();
+    lastActivityTime = millis();
     uint16_t fingerID = finger.fingerID;
     displayMessage("Welcome!", "ID: " + String(fingerID), 2000);
     
@@ -643,66 +481,90 @@ void scanForFingerprint() {
   }
 }
 
+
 /**
  * @brief Manages the multi-step process of enrolling a new user.
  */
 void enrollNewFingerprint() {
-  displayMessage("Enrollment:", "Checking server...", 0); // رسالة توضح أننا بنتحقق من السيرفر
+    displayMessage("Enrollment:", "Checking server...", 0); // رسالة توضح أننا بنتحقق من السيرفر
 
-  uint16_t newId = 0; // هتكون 0 لو مفيش ID صالح من السيرفر
+    uint16_t newId = 0; // هتكون 0 لو مفيش ID صالح من السيرفر
 
-  // 1. تحقق من اتصال الواي فاي أولاً
-  if (WiFi.status() != WL_CONNECTED) {
-    displayMessage("No WiFi!", "Cannot enroll.", 2000);
-    showMainMenu();
-    return; // إيقاف العملية لو مفيش إنترنت
-  }
-
-  // 2. لو فيه إنترنت، حاول تجيب الـ ID من السيرفر
-  displayMessage("Enrollment:", "Fetching ID...", 0); // رسالة أثناء جلب ال ID
-  newId = fetchLastIdFromServer() +1;
-  /*
-  if (newId > finger.templateCount) {
-      displayMessage("server Error", "ID Invalid", 2000);
-      showMainMenu();
-      return;
-  }*/
-  updateActivityTime();
-  displayMessage("Place finger", "ID: " + String(newId));
-  if (getFingerprintImage(1) != FINGERPRINT_OK) {
-    displayMessage("Enroll Failed", "Try Again.", 2000); 
-    showMainMenu();
-    return;
-  }
-
-  displayMessage("Place again", "ID: " + String(newId));
-  if (getFingerprintImage(2) != FINGERPRINT_OK) {
-    displayMessage("Enroll Failed", "Try Again.", 2000); 
-    showMainMenu();
-    return;
-  }
-
-  displayMessage("Creating model", "Please wait...",1000);
-
-    StaticJsonDocument<64> doc;
-    doc["id"] = newId;
-    String payload;
-    serializeJson(doc, payload);
-    
-  displayMessage("Syncing to Server", "Please wait...", 0);
-  if (WiFi.status() == WL_CONNECTED && logToServer("/api/SensorData", payload)) {
-    if (createAndStoreModel(newId) == FINGERPRINT_OK) {
-      displayMessage("Enrolled!", "ID: " + String(newId), 2000);
-      displayMessage("Synced to Server", "", 2000);
-    } else {
-      displayMessage("Failed storing", "Try again", 2000);
+    // 1. تحقق من اتصال الواي فاي أولاً
+    if (WiFi.status() != WL_CONNECTED) {
+        displayMessage("No WiFi!", "Cannot enroll.", 2000);
+        showMainMenu();
+        return; // إيقاف العملية لو مفيش إنترنت
     }
-  } else {
-    displayMessage("Server Sync Failed", "Enrollment Blocked", 3000);
-  }
-  showMainMenu();
-}
 
+    // 2. لو فيه إنترنت، حاول تجيب الـ ID من السيرفر
+    displayMessage("Enrollment:", "Fetching ID...", 0); // رسالة أثناء جلب ال ID
+    newId = fetchLastIdFromServer() + 1;
+
+    // 3. تحقق من صلاحية الـ ID المسترجع من السيرفر
+    // يجب تفعيل هذا التحقق أو استبداله بتحقق أفضل
+    /* if (newId == 0 || newId >= finger.templateCount) { // لو fetchLastIdFromServer رجعت 0 أو ID غير منطقي
+        displayMessage("Invalid ID", "From server", 2000);
+        showMainMenu();
+        return; // إيقاف العملية لو السيرفر فيه مشكلة أو ID غير صالح
+    }*/
+    
+    // تحديث مؤقت النشاط بمجرد بدء العملية الجادة
+    lastActivityTime = millis(); 
+
+    // 4. البدء في عملية أخذ البصمة
+    displayMessage("Place finger", "ID: " + String(newId));
+    if (getFingerprintImage(1) != FINGERPRINT_OK) {
+        displayMessage("Enroll Failed", "Try Again.", 2000); 
+        showMainMenu();
+        return;
+    }
+
+    displayMessage("Place again", "ID: " + String(newId));
+    if (getFingerprintImage(2) != FINGERPRINT_OK) {
+        displayMessage("Enroll Failed", "Try Again.", 2000); 
+        showMainMenu();
+        return;
+    }
+
+    displayMessage("Creating model", "Please wait..."); // لا حاجة لـ 1000 هنا، لأنها ستتغير فورًا
+
+  DateTime now = rtc.now(); // جلب الوقت الحالي من RTC
+
+  // تنسيق التاريخ والوقت بصيغة ISO 8601 (مثل: "2025-06-24T23:46:00.000Z")
+  // Z تشير إلى UTC (التوقيت العالمي المنسق). تأكد أن الـ RTC مضبوط على UTC أو قم بتحويله.
+  // يتم إضافة "0" قبل الأرقام الأقل من 10 لضمان تنسيق صحيح (مثل 01 بدلاً من 1).
+  String timestampString = String(now.year()) + "-" +
+                          (now.month() < 10 ? "0" : "") + String(now.month()) + "-" +
+                          (now.day() < 10 ? "0" : "") + String(now.day()) + "T" +
+                          (now.hour() < 10 ? "0" : "") + String(now.hour()) + ":" +
+                          (now.minute() < 10 ? "0" : "") + String(now.minute()) + ":" +
+                          (now.second() < 10 ? "0" : "") + String(now.second()) + ".000Z";
+
+  // 5. محاولة مزامنة الـ ID مع الخادم قبل التخزين على المستشعر
+  StaticJsonDocument<64> doc;
+  doc["FingerID"] = newId;             // استخدام FingerID بدلاً من id
+  doc["Timestamp"] = timestampString;  // استخدام String التاريخ والوقت بدلاً من Unix timestamp
+  String payload;
+  serializeJson(doc, payload);
+      
+    displayMessage("Syncing to Server", "Please wait...", 0);
+
+  if (logToServer("/api/SensorData", payload)) { // يجب التأكد من API الخادم
+          displayMessage("Server Synced!", "Storing locally...", 1000);
+          // 6. إذا نجحت المزامنة، قم بتخزين البصمة على المستشعر
+          if (createAndStoreModel(newId) == FINGERPRINT_OK) {
+              displayMessage("Enrolled!", "ID: " + String(newId), 2000);
+          } else {
+              // هذا يعني أن المزامنة نجحت ولكن التخزين المحلي فشل
+              displayMessage("Local Store Fail", "Contact Admin", 3000); 
+          }
+      } else {
+          // إذا فشلت المزامنة مع الخادم، لا تخزن البصمة محليًا
+          displayMessage("Server Sync Failed", "Enrollment Blocked", 3000);
+      }
+    showMainMenu();
+}
 /**
  * @brief Gets a single fingerprint image and converts it to a template.
  * @param step The step in the enrollment process (1 or 2).
@@ -713,9 +575,7 @@ uint8_t getFingerprintImage(int step) {
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
     // Allow user to cancel by pressing button 1
-    if (digitalRead(BUTTON_PIN1) == LOW) 
-    updateActivityTime();
-    return FINGERPRINT_ENROLLMISMATCH;
+    if (digitalRead(BUTTON_PIN1) == LOW) return FINGERPRINT_ENROLLMISMATCH;
   }
   
   p = finger.image2Tz(step);
@@ -751,9 +611,8 @@ uint8_t createAndStoreModel(uint16_t id) {
 
 
 /**************************************************************************************************
- *                               SD Card and Offline Logging                                      *
+ * SD Card and Offline Logging                                      *
  **************************************************************************************************/
-
 
 /**
  * @brief Logs an attendance record to the SD card.
@@ -819,11 +678,9 @@ void syncOfflineLogs() {
   }
 }
 
-
 /**************************************************************************************************
- *                                          Menu Actions                                          *
+ * Menu Actions                                              *
  **************************************************************************************************/
-
 
 /**
  * @brief Shows the options menu on the LCD.
@@ -831,18 +688,16 @@ void syncOfflineLogs() {
 void showOptionsMenu() {
   currentMenuState = MenuState::OPTIONS_MENU;
   displayMessage("Hold btn1: Clear", "Timeout: 10s");
-  updateActivityTime(); // Reset timer for menu timeout
+  lastActivityTime = millis(); // Reset timer for menu timeout
 }
-
 /**
  * @brief Shows the main menu on the LCD.
  */
 void showMainMenu() {
   currentMenuState = MenuState::MAIN_MENU;
   displayMessage("btn1:add finger", "btn2:manage wifi ");
-  updateActivityTime();
+  lastActivityTime = millis();
 }
-
 /**
  * @brief Contacts the server for authorization and then deletes all fingerprint data.
  */
@@ -873,5 +728,4 @@ void attemptToClearAllData() {
   }
   
   showMainMenu();
-  updateActivityTime();
 }
