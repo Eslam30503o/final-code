@@ -44,6 +44,8 @@ const uint8_t BUTTON_PIN1 = 34; // GPIO34 is input-only, requires external pull-
 const uint8_t BUTTON_PIN2 = 35; // GPIO35 is input-only, requires external pull-up resistor
 // SD Card Chip Select (CS) Pin
 const uint8_t SD_CS_PIN = 5;
+// Define the GPIO Pin that will be connected to the Interrupt Pin of the fingerprint sensor
+const uint8_t FINGERPRINT_IRQ_PIN = 0;
 
 // --- SERVER AND TIME CONFIGURATION ---
 #define SERVER_HOST "https://192.168.1.12:7069" // The base URL of your backend server
@@ -262,6 +264,7 @@ void setupModules() {
   // GPIO 34 & 35 are input only and need external pull-up resistors.
   pinMode(BUTTON_PIN1, INPUT_PULLUP); 
   pinMode(BUTTON_PIN2, INPUT_PULLUP);
+  pinMode(FINGERPRINT_IRQ_PIN, INPUT_PULLUP);
 }
 
 /**
@@ -376,14 +379,36 @@ void enterLightSleep() {
     // تفعيل الاستيقاظ بواسطة الأزرار
     // ده بيجمع الـ GPIOs اللي هتصحي الجهاز
     // وده معناه: لو أي واحد من الـ GPIOs دي بقى LOW، صحّي الجهاز
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_34, 1); 
+    /*esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_34, 0); 
     esp_sleep_enable_ext0_wakeup(GPIO_NUM_35, 0);
-
-    // ابدأ وضع النوم الخفيف
+    esp_light_sleep_start();*/
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL); 
+    uint64_t wakeup_pins_mask = (1ULL << FINGERPRINT_IRQ_PIN);
+    esp_sleep_enable_ext1_wakeup(wakeup_pins_mask, ESP_EXT1_WAKEUP_ALL_LOW);
     esp_light_sleep_start();
+    // ابدأ وضع النوم الخفيف
+    
 
-    // --- الكود هنا سيستأنف التنفيذ بعد الاستيقاظ من النوم ---
+    esp_sleep_source_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
+        uint64_t wakeup_gpio_mask = esp_sleep_get_ext1_wakeup_status();
+        if (wakeup_gpio_mask & (1ULL << FINGERPRINT_IRQ_PIN)) {
+            // الجهاز صحي بسبب وضع إيد على حساس البصمة
+            displayMessage("Finger Detected!", "Scanning...", 1000);
+            // ابدأ عملية مسح البصمة
+            scanForFingerprint(); 
+        } else if (wakeup_gpio_mask & ((1ULL << GPIO_NUM_34) | (1ULL << GPIO_NUM_35))) {
+            // الجهاز صحي بسبب الضغط على زر
+            displayMessage("Button Pressed!", "Waking Up...", 1000);
+            showMainMenu(); // ارجع للقائمة الرئيسية
+        }
+    } else {
+        // صحي بسبب سبب آخر (مثل Timeout) أو لم يتم تحديد السبب بدقة
+        displayMessage("Woke Up!", "Returning...", 1000);
+        showMainMenu();
+    }
 
     // إعادة تفعيل الـ WiFi بعد الاستيقاظ
      if (WiFi.status() != WL_CONNECTED) {
