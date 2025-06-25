@@ -684,7 +684,7 @@ void enrollNewFingerprint() {
     if (WiFi.status() != WL_CONNECTED) {
         displayMessage("No WiFi!", "Cannot enroll.", 2000);
         showMainMenu();
-        return; /
+        return; 
     }
 
     displayMessage("Enrollment:", "Fetching ID...", 0); 
