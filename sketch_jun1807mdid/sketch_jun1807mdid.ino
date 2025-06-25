@@ -30,6 +30,7 @@
 #include <RTClib.h>
 #include <SD.h>
 #include <SPI.h>
+#include <time.h> 
 
 // --- HARDWARE PIN DEFINITIONS ---
 // LCD Pins (rs, en, d4, d5, d6, d7)
@@ -47,8 +48,8 @@ const uint8_t SD_CS_PIN = 5;
 // --- SERVER AND TIME CONFIGURATION ---
 #define SERVER_HOST "https://192.168.1.12:7069" // The base URL of your backend server
 #define NTP_SERVER "pool.ntp.org"             // Network Time Protocol server for initial time sync
-#define GMT_OFFSET_SEC 3600 * 2               // GMT offset for your timezone (e.g., UTC+2 for Egypt Standard Time)
-#define DAYLIGHT_OFFSET_SEC 0                 // Daylight saving offset (0 if not applicable)
+#define GMT_OFFSET_SEC (3600 * 2)               // GMT offset for your timezone (e.g., UTC+2 for Egypt Standard Time)
+#define DAYLIGHT_OFFSET_SEC (3600 * 1)                // Daylight saving offset (0 if not applicable)
 #define OFFLINE_LOG_FILE "/attendance_log.txt"
 
 // --- CONSTANTS AND TIMERS ---
@@ -56,6 +57,55 @@ const uint32_t DEBOUNCE_DELAY = 50;        // 50 ms for button debouncing
 const uint32_t LONG_PRESS_DELAY = 1000;    // 1000 ms = 1 second for a long press
 const uint32_t MENU_TIMEOUT = 10000;       // 10000 ms = 10 seconds for menu timeout
 const uint32_t SLEEP_TIMEOUT = 15000;       // 15000 ms = 15 seconds of inactivity before light sleep
+const long gmtOffset_sec = 2 * 3600;        // GMT+2 (توقيت شرق أوروبا القياسي)
+const int daylightOffset_sec = 1 * 3600;    //ساعة واحدة للتوقيت الصيفي (EEST)
+static unsigned long lastSignalUpdateTime = 0;
+
+// WiFi Signal Symbol - No Signal (أو مجرد نقطة)
+// *** إضافة أشكال الواي فاي هنا ***
+byte wifiStrong[8] = {
+  0b00000,
+  0b00000,
+  0b00000, // السطر ده عشان فيه 8 صفوف للـ char
+  0b01110, // الموجة العليا
+  0b10001, // بداية الموجة الوسطى
+  0b01010, // الموجة الوسطى (نقطتين)
+  0b00100, // الموجة السفلية (نقطة واحدة)
+  0b00000
+};
+
+byte wifiMedium[8] = {
+  0b00000,
+  0b00000,
+  0b00000,
+  0b00000, // الموجة العليا فاضية
+  0b01010, // الموجة الوسطى (نقطتين)
+  0b00100, // الموجة السفلية (نقطة واحدة)
+  0b00000,
+  0b00000
+};
+
+byte wifiWeak[8] = {
+  0b00000,
+  0b00000,
+  0b00000,
+  0b00000,
+  0b00000, // الموجة العليا والوسطى فاضية
+  0b00100, // نقطة واحدة فقط
+  0b00000,
+  0b00000
+};
+// تعريف رمز البصمة الجديد (شكل أكثر جاذبية)
+byte fingerprintSymbol[8] = {
+  0b00100, // . . X . . (نقطة مركزية أو بداية خط)
+  0b01010, // . X . X . (قوس علوي)
+  0b10001, // X . . . X (قوس أوسع)
+  0b10101, // X . X . X (نقطة في المنتصف مع خطوط جانبية)
+  0b10001, // X . . . X
+  0b01010, // . X . X .
+  0b00100, // . . X . .
+  0b00000  // صف فارغ
+};
 
 // --- GLOBAL OBJECTS ---
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
@@ -85,11 +135,12 @@ bool btn2Held = false;
 void displayMessage(String line1, String line2 = "", int delayMs = 0);
 void handleButtons();
 uint16_t findNextAvailableID();
+void displayWiFiSignal();
 
 // WiFi & Server
 void setupWiFi(bool portal);
 bool logToServer(const String& endpoint, const String& payload);
-bool syncAttendanceToServer(uint16_t id, time_t timestamp);
+bool syncAttendanceToServer(uint16_t id, String timestampString);
 uint16_t fetchLastIdFromServer();
 
 // Fingerprint Operations
@@ -127,6 +178,10 @@ void setup() {
   
   if (WiFi.status() == WL_CONNECTED) {
     displayMessage("WiFi Connected!", WiFi.localIP().toString(), 2000);
+    setenv("TZ", "EET-2EEST,M4.4.5/0,M10.5.5/1", 1); // EET = UTC+2, EEST = UTC+3. ده لـ مصر
+    tzset(); // تطبيق الـ timezone الجديد
+    configTime(gmtOffset_sec, daylightOffset_sec, NTP_SERVER);
+    
     syncOfflineLogs(); // Sync any logs stored on SD card
   } else {
     displayMessage("Offline Mode", "RTC Time Active", 2000);
@@ -141,12 +196,20 @@ void setup() {
  **************************************************************************************************/
 void loop() {
   handleButtons();
-
+  lcd.setCursor(15, 1); // العمود 15، السطر 1
+  lcd.write(4);
+  if (WiFi.status() == WL_CONNECTED && millis() - lastSignalUpdateTime > 2000) { // حدث كل ثانيتين
+    displayWiFiSignal();
+    lastSignalUpdateTime = millis();
+  }
   // Only scan for fingerprints when in the main menu and no buttons are being pressed.
   if (currentMenuState == MenuState::MAIN_MENU && !btn1PressTime && !btn2PressTime) {
     scanForFingerprint();
   }
 
+  if (currentMenuState == MenuState::MAIN_MENU && WiFi.status() == WL_CONNECTED) {
+     displayWiFiSignal(); // تأكد إنها بتظهر لما نكون في المين مينيو
+  }
   // Check for menu timeout in the options menu
   if (currentMenuState == MenuState::OPTIONS_MENU && (millis() - lastActivityTime > MENU_TIMEOUT)) {
       displayMessage("Timeout", "Returning...", 1500);
@@ -169,6 +232,10 @@ void loop() {
 void setupModules() {
   // --- LCD Setup ---
   lcd.begin(16, 2);
+   lcd.createChar(0, wifiWeak);   // رمز رقم 0: إشارة ضعيفة
+  lcd.createChar(1, wifiMedium); // رمز رقم 1: إشارة متوسطة
+  lcd.createChar(2, wifiStrong);
+  lcd.createChar(4, fingerprintSymbol);
   displayMessage("System Booting", "Please wait...");
   delay(2000);
 
@@ -193,8 +260,8 @@ void setupModules() {
 
   // --- Button Setup ---
   // GPIO 34 & 35 are input only and need external pull-up resistors.
-  pinMode(BUTTON_PIN1, INPUT); 
-  pinMode(BUTTON_PIN2, INPUT);
+  pinMode(BUTTON_PIN1, INPUT_PULLUP); 
+  pinMode(BUTTON_PIN2, INPUT_PULLUP);
 }
 
 /**
@@ -208,8 +275,30 @@ void setupRtcAndSyncTime() {
   
   if (rtc.lostPower()) {
     displayMessage("RTC Power Lost!", "Syncing time...", 2000);
-    // If WiFi is connected later, time will be synced. If not, it will use the time it was compiled.
+  // محاولة مزامنة الوقت من NTP فوراً لو فيه اتصال إنترنت
+    if (WiFi.status() == WL_CONNECTED) {
+      configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo)){
+          rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+          displayMessage("RTC Synced!", "From NTP.", 1500);
+          return; // تم التزامن، مش محتاجين نكمل
+      } else {
+          displayMessage("NTP Sync Failed!", "Using compile time.", 2000);
+      }
+    } else {
+      displayMessage("No WiFi for NTP", "Using compile time.", 2000);
+    }
+    
+    // لو مفيش إنترنت أو تزامن NTP فشل، استخدم وقت الكومبايلر كـ "خطة بديلة" أولية
+    // ده بيضمن إن الـ RTC مش هيبدأ من وقت عشوائي تماماً لو البطارية خلصانة
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    displayMessage("RTC Set", "From Compile Time", 1500);
+
+  } else {
+    // لو الـ RTC فيه وقت، ده معناه إن البطارية شغالة أو كان متظبط قبل كده
+    // في الحالة دي، هنعتمد على الوقت اللي في الـ RTC
+    // displayMessage("RTC Time Active", "No NTP Sync Needed", 1500); // ممكن تظهر الرسالة دي
   }
 }
 
@@ -228,25 +317,86 @@ void displayMessage(String line1, String line2, int delayMs) {
   if (delayMs > 0) {
     delay(delayMs);
   }
+  if (WiFi.status() == WL_CONNECTED) {
+      displayWiFiSignal(); 
+  }
 }
 
 /**
  * @brief Enters light sleep to save power and configures buttons to wake the ESP32.
  */
-void enterLightSleep() {
-    displayMessage("Entering sleep...", "Press Btn to wake", 2000);
-    //lcd.noDisplay(); // Turn off LCD backlight if controlled by a transistor
+// تأكد إنك معرّف أرقام البنزات دي في أول الكود بتاعك
+// const int BUTTON_PIN1 = 34;
+// const int BUTTON_PIN2 = 35;
 
-    // Enable wakeup from either button (active LOW)
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_34, 0); 
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_35, 0); 
-    esp_sleep_enable_ext1_wakeup((1ULL << BUTTON_PIN1) || (1ULL << BUTTON_PIN2), ESP_EXT1_WAKEUP_ALL_LOW); // This might need adjustment depending on your button circuit (pull-up vs pull-down)
+void enterLightSleep() {
+    // جلب الوقت والتاريخ الحالي لعرضه قبل النوم
+    DateTime now = rtc.now();
+
+    // تجهيز الوقت بصيغة 12 ساعة مع AM/PM
+    char timeStr[12]; // Buffer for HH:MM:SS AM/PM
+    int hour12 = now.hour();
+    String ampm = "AM";
+    if (hour12 >= 12) {
+        ampm = "PM";
+        if (hour12 > 12) {
+            hour12 -= 12;
+        }
+    }
+    if (hour12 == 0) { // Handle 00:XX AM as 12:XX AM
+        hour12 = 12;
+    }
+    sprintf(timeStr, "%02d:%02d:%02d %s", hour12, now.minute(), now.second(), ampm.c_str());
+
+    // تجهيز التاريخ
+    char dateStr[11]; // Buffer for YYYY-MM-DD
+    sprintf(dateStr, "%04d-%02d-%02d", now.year(), now.month(), now.day());
+
+    // عرض الرسالة الخاصة بوضع النوم مع الوقت والتاريخ في المنتصف
+    // بما إن الشاشة 16 حرف، هنحسب المسافات عشان تكون في المنتصف
+    int timeLen = String(timeStr).length();
+    int dateLen = String(dateStr).length();
+    int timePadding = (16 - timeLen) / 2;
+    int datePadding = (16 - dateLen) / 2;
+
+    lcd.clear();
+    lcd.setCursor(timePadding, 0); // السطر الأول في المنتصف
+    lcd.print(timeStr);
+    lcd.setCursor(datePadding, 1); // السطر الثاني في المنتصف
+    lcd.print(dateStr);
+
+    lcd.setCursor(15, 1); // العمود 15، السطر 1
+    lcd.write(4);
+    if (WiFi.status() == WL_CONNECTED) {
+        displayWiFiSignal(); // لعرض أيقونة قوة إشارة الواي فاي في مكانها (15,0)
+    }
+    delay(2000); // عرض الرسالة لمدة ثانيتين قبل النوم الفعلي
+
+    // lcd.noDisplay(); // يمكنك إزالة التعليق من هذا السطر لإطفاء الشاشة تماماً لتوفير الطاقة
+    // تفعيل الاستيقاظ بواسطة الأزرار
+    // ده بيجمع الـ GPIOs اللي هتصحي الجهاز
+    // وده معناه: لو أي واحد من الـ GPIOs دي بقى LOW، صحّي الجهاز
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_34, 1); 
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_35, 0);
+
+    // ابدأ وضع النوم الخفيف
     esp_light_sleep_start();
 
-    // --- Code execution resumes here after wakeup ---
+    // --- الكود هنا سيستأنف التنفيذ بعد الاستيقاظ من النوم ---
+
+    // إعادة تفعيل الـ WiFi بعد الاستيقاظ
+     if (WiFi.status() != WL_CONNECTED) {
+       displayMessage("Reconnecting WiFi", "", 0);
+       WiFi.reconnect();
+     }
+
+    // تشغيل شاشة الـ LCD مرة أخرى (لو كنت قفلتها)
     lcd.display();
-    lastActivityTime = millis(); // Reset activity timer upon waking
-    showMainMenu();
+    // lcd.backlight(); // لو عندك دالة خاصة بتشغيل الإضاءة الخلفية
+
+    lastActivityTime = millis(); // إعادة ضبط مؤقت النشاط عند الاستيقاظ
+    showMainMenu(); // عرض القائمة الرئيسية
 }
 
 
@@ -387,18 +537,8 @@ uint16_t fetchLastIdFromServer() {
  * @param timestamp The Unix timestamp of the attendance.
  * @return True on success, false on failure.
  */
-bool syncAttendanceToServer(uint16_t id, time_t timestamp) {
+bool syncAttendanceToServer(uint16_t id, String timestampString) {
     if (WiFi.status() != WL_CONNECTED) return false;
-
-    DateTime entryTime(timestamp); // تحويل Unix timestamp إلى كائن DateTime
-
-    // تنسيق التاريخ والوقت بصيغة ISO 8601
-    String timestampString = String(entryTime.year()) + "-" +
-                            (entryTime.month() < 10 ? "0" : "") + String(entryTime.month()) + "-" +
-                            (entryTime.day() < 10 ? "0" : "") + String(entryTime.day()) + "T" +
-                            (entryTime.hour() < 10 ? "0" : "") + String(entryTime.hour()) + ":" +
-                            (entryTime.minute() < 10 ? "0" : "") + String(entryTime.minute()) + ":" +
-                            (entryTime.second() < 10 ? "0" : "") + String(entryTime.second()) + ".000Z";
 
     StaticJsonDocument<128> doc;
     doc["FingerID"] = id;               // استخدام FingerID بدلاً من id
@@ -417,19 +557,81 @@ bool syncAttendanceToServer(uint16_t id, time_t timestamp) {
  * @return True if the server returns a 2xx success code, false otherwise.
  */
 bool logToServer(const String& endpoint, const String& payload) {
-    if (WiFi.status() != WL_CONNECTED) return false;
-
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected. This should not happen if device reports connected.");
+        return false;
+    }
+    
     HTTPClient http;
     String url = String(SERVER_HOST) + endpoint;
+    
+    // 1. تأكد من الـ URL اللي بيتحاول الاتصال بيه
+    Serial.print("DEBUG: Full URL being attempted: ");
+    Serial.println(url);
+    Serial.print("DEBUG: Payload being sent: ");
+    Serial.println(payload);
+
+    // 2. محاولة بدأ الاتصال
+    bool beginSuccess;
+    // لو الـ SERVER_HOST بيبدأ بـ "https://"، لازم تستخدم WiFiClientSecure
+    // وإلا، سيب السطر اللي تحت ده بس
+    //
+    // لو انت متأكد إنك بتستخدم HTTP فقط، يبقى الكود ده صح:
     http.begin(url); 
+    //
+    // لو انت بتستخدم HTTPS، يبقى الكود المفروض يكون كده:
+    // WiFiClientSecure client; // لازم تعرف الـ client بره الدالة لو عايزها تتعدل زي ما شرحنا قبل كده
+    // client.setInsecure(); // لو بتستخدمها للتطوير فقط، أمانها قليل
+    // beginSuccess = http.begin(client, url);
+    //
+    // عشان نسهل التشخيص دلوقتي، لو بتستخدم HTTPS، شيلها مؤقتاً وحول الـ SERVER_HOST لـ HTTP
+    // أو لو متأكد إنك عاملها صح، كمل زي ما انت.
+
     http.addHeader("Content-Type", "application/json");
 
     int httpCode = http.POST(payload);
+    
+    // 3. طباعة الـ HTTP Code والاستجابة
+    Serial.print("DEBUG: HTTP Response Code: ");
+    Serial.println(httpCode); 
+    
+    if (httpCode > 0) { 
+        String response = http.getString(); 
+        Serial.print("DEBUG: Server Response: ");
+        Serial.println(response);
+    } else {
+        Serial.print("DEBUG: HTTP Connection Error: ");
+        Serial.println(http.errorToString(httpCode).c_str());
+    }
+
     http.end();
 
-    return (httpCode >= 200 && httpCode < 300); // Return true for any 2xx success codes
+    return (httpCode >= 200 && httpCode < 300);
 }
 
+void displayWiFiSignal() {
+  if (WiFi.status() == WL_CONNECTED) {
+    long rssi = WiFi.RSSI(); 
+    uint8_t signalCharIndex = 0; // Default to weak (index 0)
+
+    // تحديد الرمز بناءً على قوة الإشارة (RSSI)
+    // القيم دي ممكن تحتاج تعديل بناءً على تجربتك الفعلية
+    if (rssi >= -60) {
+      signalCharIndex = 2; // Strong signal (wifiStrong, index 2)
+    } else if (rssi >= -75) { // ممكن تغير القيمة دي حسب تجربتك
+      signalCharIndex = 1; // Medium signal (wifiMedium, index 1)
+    } else {
+      signalCharIndex = 0; // Weak signal (wifiWeak, index 0)
+    }
+
+    lcd.setCursor(15, 0); // آخر عمود في السطر الأول
+    lcd.write(signalCharIndex); // اطبع الرمز المخزن بالرقم ده
+  } else {
+    // لو مفيش اتصال بالواي فاي، ممكن نمسح الرمز
+    lcd.setCursor(15, 0);
+    lcd.print(" "); 
+  }
+}
 
 /**************************************************************************************************
  * Fingerprint Operation Functions                                 *
@@ -445,6 +647,8 @@ bool logToServer(const String& endpoint, const String& payload) {
  * @brief Continuously scans for a fingerprint and logs attendance if a match is found.
  */
 void scanForFingerprint() {
+  lcd.setCursor(15, 1); // العمود 15، السطر 1
+  lcd.write(4);
   // Wait for a finger to be placed on the sensor
   uint8_t p = finger.getImage();
   if (p != FINGERPRINT_OK) return;
@@ -462,7 +666,13 @@ void scanForFingerprint() {
     
     // Log the attendance (this function handles online/offline logic)
     DateTime now = rtc.now();
-    if(syncAttendanceToServer(fingerID, now.unixtime())){
+    String timestampString = String(now.year()) + "-" +
+                             (now.month() < 10 ? "0" : "") + String(now.month()) + "-" +
+                             (now.day() < 10 ? "0" : "") + String(now.day()) + "T" +
+                             (now.hour() < 10 ? "0" : "") + String(now.hour()) + ":" +
+                             (now.minute() < 10 ? "0" : "") + String(now.minute()) + ":" +
+                             (now.second() < 10 ? "0" : "") + String(now.second()) + ".000Z";
+    if(syncAttendanceToServer(fingerID, timestampString)){
         displayMessage("Attendance Sent!", "", 1500);
     } else {
         displayMessage("Saved Offline", "", 1500);
@@ -486,6 +696,8 @@ void scanForFingerprint() {
  * @brief Manages the multi-step process of enrolling a new user.
  */
 void enrollNewFingerprint() {
+    lcd.setCursor(15, 1); // العمود 15، السطر 1
+    lcd.write(4);
     displayMessage("Enrollment:", "Checking server...", 0); // رسالة توضح أننا بنتحقق من السيرفر
 
     uint16_t newId = 0; // هتكون 0 لو مفيش ID صالح من السيرفر
@@ -528,40 +740,36 @@ void enrollNewFingerprint() {
     }
 
     displayMessage("Creating model", "Please wait..."); // لا حاجة لـ 1000 هنا، لأنها ستتغير فورًا
+    uint8_t createStoreResult = createAndStoreModel(newId);
 
-  DateTime now = rtc.now(); // جلب الوقت الحالي من RTC
+      if (createStoreResult == FINGERPRINT_OK) {
+          // لو عملية إنشاء وتخزين الموديل على المستشعر نجحت
+          displayMessage("Local Store OK!", "Syncing...", 1000);
 
-  // تنسيق التاريخ والوقت بصيغة ISO 8601 (مثل: "2025-06-24T23:46:00.000Z")
-  // Z تشير إلى UTC (التوقيت العالمي المنسق). تأكد أن الـ RTC مضبوط على UTC أو قم بتحويله.
-  // يتم إضافة "0" قبل الأرقام الأقل من 10 لضمان تنسيق صحيح (مثل 01 بدلاً من 1).
-  String timestampString = String(now.year()) + "-" +
-                          (now.month() < 10 ? "0" : "") + String(now.month()) + "-" +
-                          (now.day() < 10 ? "0" : "") + String(now.day()) + "T" +
-                          (now.hour() < 10 ? "0" : "") + String(now.hour()) + ":" +
-                          (now.minute() < 10 ? "0" : "") + String(now.minute()) + ":" +
-                          (now.second() < 10 ? "0" : "") + String(now.second()) + ".000Z";
+          // --- الجزء ده هو اللي هيتبعت للسيرفر ---
+          StaticJsonDocument<64> doc;
+          doc["FingerID"] = newId; // هنبعت الـ FingerID بس
 
-  // 5. محاولة مزامنة الـ ID مع الخادم قبل التخزين على المستشعر
-  StaticJsonDocument<64> doc;
-  doc["FingerID"] = newId;             // استخدام FingerID بدلاً من id
-  //doc["Timestamp"] = timestampString;  // استخدام String التاريخ والوقت بدلاً من Unix timestamp
-  String payload;
-  serializeJson(doc, payload);
-      
-    displayMessage("Syncing to Server", "Please wait...", 0);
+          // بما إنك مش عايز تبعت Timestamp، السطر ده هيفضل معلق أو محذوف
+          // doc["Timestamp"] = timestampString;
 
-  if (logToServer("/api/SensorData", payload)) { // يجب التأكد من API الخادم
-          displayMessage("Server Synced!", "Storing locally...", 1000);
-          // 6. إذا نجحت المزامنة، قم بتخزين البصمة على المستشعر
-          if (createAndStoreModel(newId) == FINGERPRINT_OK) {
-              displayMessage("Enrolled!", "ID: " + String(newId), 2000);
+          String payload;
+          serializeJson(doc, payload);
+              
+          displayMessage("Syncing to Server", "Please wait...", 0);
+
+          // 6. لو التخزين المحلي نجح، ابعت البيانات للسيرفر
+          if (logToServer("/api/SensorData", payload)) { // يجب التأكد من API الخادم
+              displayMessage("Server Synced!", "Enrolled!", 2000);
           } else {
-              // هذا يعني أن المزامنة نجحت ولكن التخزين المحلي فشل
-              displayMessage("Local Store Fail", "Contact Admin", 3000); 
+              // إذا فشلت المزامنة مع الخادم بعد التخزين المحلي الناجح
+              // ممكن تحتاج تضيف منطق للتعامل مع ده، زي محاولة إعادة الإرسال لاحقًا
+              displayMessage("Server Sync Failed", "Local OK, Server NO", 3000);
           }
       } else {
-          // إذا فشلت المزامنة مع الخادم، لا تخزن البصمة محليًا
-          displayMessage("Server Sync Failed", "Enrollment Blocked", 3000);
+          // لو فشلت عملية إنشاء أو تخزين الموديل على المستشعر
+          // رسالة الخطأ هتكون بالفعل ظهرت من داخل createAndStoreModel()
+          // displayMessage("Enroll Failed", "Model/Storage Error", 2000); // ممكن تضيفها لو عايز رسالة عامة هنا
       }
     showMainMenu();
 }
@@ -633,6 +841,8 @@ void logAttendanceOffline(uint16_t id, time_t timestamp) {
  * @brief Reads logs from the SD card and attempts to sync them to the server.
  */
 void syncOfflineLogs() {
+  lcd.setCursor(15, 1); // العمود 15، السطر 1
+  lcd.write(4);
   displayMessage("Syncing Offline ", "logs...", 0);
   File logFile = SD.open(OFFLINE_LOG_FILE, FILE_READ);
   if (!logFile) {
@@ -653,8 +863,14 @@ void syncOfflineLogs() {
     if (commaIndex != -1) {
       uint16_t id = line.substring(0, commaIndex).toInt();
       time_t timestamp = (time_t)line.substring(commaIndex + 1).toInt();
-
-      if (syncAttendanceToServer(id, timestamp)) {
+      DateTime entryTime(timestamp); 
+      String timestampString = String(entryTime.year()) + "-" +
+                               (entryTime.month() < 10 ? "0" : "") + String(entryTime.month()) + "-" +
+                               (entryTime.day() < 10 ? "0" : "") + String(entryTime.day()) + "T" +
+                               (entryTime.hour() < 10 ? "0" : "") + String(entryTime.hour()) + ":" +
+                               (entryTime.minute() < 10 ? "0" : "") + String(entryTime.minute()) + ":" +
+                               (entryTime.second() < 10 ? "0" : "") + String(entryTime.second()) + ".000Z";
+      if (syncAttendanceToServer(id, timestampString)) {
         // Log was sent successfully, so we don't write it to the temp file.
       } else {
         // Failed to send, so write it to the temp file to keep it.
@@ -686,24 +902,35 @@ void syncOfflineLogs() {
  * @brief Shows the options menu on the LCD.
  */
 void showOptionsMenu() {
+    lcd.setCursor(15, 1); // العمود 15، السطر 1
+    lcd.write(4);
   currentMenuState = MenuState::OPTIONS_MENU;
   displayMessage("Hold btn1: Clear", "Timeout: 10s");
   lastActivityTime = millis(); // Reset timer for menu timeout
+   if (WiFi.status() == WL_CONNECTED) {
+      displayWiFiSignal();
+  }
 }
 /**
  * @brief Shows the main menu on the LCD.
  */
 void showMainMenu() {
   currentMenuState = MenuState::MAIN_MENU;
+    lcd.setCursor(15, 1); // العمود 15، السطر 1
+    lcd.write(4);
   displayMessage("btn1:add finger", "btn2:manage wifi ");
   lastActivityTime = millis();
+   if (WiFi.status() == WL_CONNECTED) {
+      displayWiFiSignal();
+  }
 }
 /**
  * @brief Contacts the server for authorization and then deletes all fingerprint data.
  */
 void attemptToClearAllData() {
   displayMessage("Authorizing...", "Please wait", 0);
-  
+    lcd.setCursor(15, 1); // العمود 15، السطر 1
+    lcd.write(4);
   if (WiFi.status() != WL_CONNECTED) {
       displayMessage("No WiFi", "Cannot clear data", 2000);
       showMainMenu();
