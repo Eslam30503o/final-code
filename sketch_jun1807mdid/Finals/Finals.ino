@@ -190,7 +190,7 @@ void setup() {
     configTime(gmtOffset_sec, daylightOffset_sec, NTP_SERVER);
     syncOfflineLogs(); // Sync any logs stored on SD card
   } else {
-    displayMessage("Offline Mode", "RTC Time Active", 2000);
+    displayMessage("Offline Mode", "WI FI not Active", 2000);
   }
 
   lastActivityTime = millis(); // Initialize activity timer
@@ -204,6 +204,9 @@ void loop() {
   handleButtons();
   lcd.setCursor(15, 1); 
   lcd.write(4);
+  if (WiFi.status() != WL_CONNECTED) {
+       WiFi.reconnect();
+     }
   if (WiFi.status() == WL_CONNECTED && millis() - lastSignalUpdateTime > 1000) { 
     displayWiFiSignal();
     lastSignalUpdateTime = millis();
