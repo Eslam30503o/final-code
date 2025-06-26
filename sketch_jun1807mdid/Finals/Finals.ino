@@ -46,6 +46,8 @@ const uint8_t BUTTON_PIN2 = 35; // GPIO35 is input-only, requires external pull-
 const uint8_t SD_CS_PIN = 5;
 // Define the GPIO Pin that will be connected to the Interrupt Pin of the fingerprint sensor
 const uint8_t FINGERPRINT_IRQ_PIN = 0;
+// Pin to control LCD backlight
+const uint8_t LCD_BACKLIGHT_PIN = 13;
 
 // --- SERVER AND TIME CONFIGURATION ---
 #define SERVER_HOST "https://192.168.1.12:7069" // The base URL of your backend server
@@ -169,20 +171,23 @@ void enterLightSleep();
  **************************************************************************************************/
 void setup() {
  Serial.begin(115200); // For debugging purposes
-  
+  digitalWrite(LCD_BACKLIGHT_PIN, LOW);
   setupModules();
   setupRtcAndSyncTime();
   
   // Initial WiFi connection attempt (non-blocking)
   displayMessage("Connecting WiFi", "Please wait...");
-  setupWiFi(false); // false = don't start config portal on boot
-  
-  if (WiFi.status() == WL_CONNECTED) {
+  //setupWiFi(false); // false = don't start config portal on boot
+
+  WiFiManager wm;
+  wm.setConnectTimeout(20); 
+  wm.setConfigPortalBlocking(false); 
+  bool connected = wm.autoConnect("FingerprintSetupAP");
+  if (connected) {
     displayMessage("WiFi Connected!", WiFi.localIP().toString(), 2000);
     setenv("TZ", "EET-2EEST,M4.4.5/0,M10.5.5/1", 1);
     tzset(); 
     configTime(gmtOffset_sec, daylightOffset_sec, NTP_SERVER);
-    
     syncOfflineLogs(); // Sync any logs stored on SD card
   } else {
     displayMessage("Offline Mode", "RTC Time Active", 2000);
@@ -237,6 +242,7 @@ void setupModules() {
   lcd.createChar(1, wifiMedium); 
   lcd.createChar(2, wifiStrong);
   lcd.createChar(4, fingerprintSymbol);
+  digitalWrite(LCD_BACKLIGHT_PIN, LOW);
   displayMessage("System Booting", "Please wait...");
   delay(2000);
 
@@ -262,6 +268,8 @@ void setupModules() {
   pinMode(BUTTON_PIN1, INPUT_PULLUP); 
   pinMode(BUTTON_PIN2, INPUT_PULLUP);
   pinMode(FINGERPRINT_IRQ_PIN, INPUT_PULLUP);
+  pinMode(LCD_BACKLIGHT_PIN, OUTPUT);
+
 }
 
 /**
@@ -270,7 +278,7 @@ void setupModules() {
 void setupRtcAndSyncTime() {
   if (!rtc.begin()) {
     displayMessage("RTC Error!", "Check wiring.", 5000);
-    while (1) { delay(1); } // Halt on critical error
+    //while (1) { delay(1); } // Halt on critical error
   }
   
   if (rtc.lostPower()) {
@@ -303,6 +311,7 @@ void setupRtcAndSyncTime() {
  * @param delayMs Duration to show the message before returning (optional).
  */
 void displayMessage(String line1, String line2, int delayMs) {
+  digitalWrite(LCD_BACKLIGHT_PIN, LOW);
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(line1);
@@ -365,9 +374,10 @@ void enterLightSleep() {
     esp_light_sleep_start();*/
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL); 
     uint64_t wakeup_pins_mask = (1ULL << FINGERPRINT_IRQ_PIN);
+    digitalWrite(LCD_BACKLIGHT_PIN, HIGH);
     esp_sleep_enable_ext1_wakeup(wakeup_pins_mask, ESP_EXT1_WAKEUP_ALL_LOW);
     esp_light_sleep_start();
-    
+    digitalWrite(LCD_BACKLIGHT_PIN, LOW);
     esp_sleep_source_t wakeup_reason = esp_sleep_get_wakeup_cause();
 
     if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
@@ -862,9 +872,10 @@ void syncOfflineLogs() {
  * @brief Shows the options menu on the LCD.
  */
 void showOptionsMenu() {
-    lcd.setCursor(15, 1); 
-    lcd.write(4);
   currentMenuState = MenuState::OPTIONS_MENU;
+  digitalWrite(LCD_BACKLIGHT_PIN, LOW);
+  lcd.setCursor(15, 1); 
+  lcd.write(4);
   displayMessage("Hold btn1: Clear", "Timeout: 10s");
   lastActivityTime = millis(); // Reset timer for menu timeout
    if (WiFi.status() == WL_CONNECTED) {
@@ -876,8 +887,9 @@ void showOptionsMenu() {
  */
 void showMainMenu() {
   currentMenuState = MenuState::MAIN_MENU;
-    lcd.setCursor(15, 1); 
-    lcd.write(4);
+  digitalWrite(LCD_BACKLIGHT_PIN, LOW);
+  lcd.setCursor(15, 1); 
+  lcd.write(4);
   displayMessage("btn1:add finger", "btn2:manage wifi ");
   lastActivityTime = millis();
    if (WiFi.status() == WL_CONNECTED) {
