@@ -56,6 +56,12 @@ const uint8_t LCD_BACKLIGHT_PIN = 13;
 #define DAYLIGHT_OFFSET_SEC (3600 * 1)                // Daylight saving offset (0 if not applicable)
 #define OFFLINE_LOG_FILE "/attendance_log.txt"
 
+// --- API ENDPOINTS ---
+#define ATTENDANCE_ENDPOINT "/api/attendance/attendanceStudentFinder"
+#define FP_ENROLL_ENDPOINT "/api/SensorData/Enroll"
+#define FP_ALL_ENDPOINT "/api/attendance/GetAllSubjects"
+#define FP_LAST_ID_ENDPOINT "/api/SensorData/last-id"
+
 // --- CONSTANTS AND TIMERS ---
 const uint32_t DEBOUNCE_DELAY = 50;        // 50 ms for button debouncing
 const uint32_t LONG_PRESS_DELAY = 1000;    // 1000 ms = 1 second for a long press
@@ -522,7 +528,7 @@ uint16_t fetchLastIdFromServer() {
   }
   
   HTTPClient http;
-  String url = String(SERVER_HOST) + "/api/SensorData/last-id";
+  String url = String(SERVER_HOST) + FP_LAST_ID_ENDPOINT;
   
   http.begin(url); 
 
@@ -554,7 +560,7 @@ bool syncAttendanceToServer(uint16_t id, String timestampString) {
     String payload;
     serializeJson(doc, payload);
 
-    return logToServer("/api/SensorData", payload);
+    return logToServer(ATTENDANCE_ENDPOINT, payload);
 }
 
 /**
@@ -725,13 +731,13 @@ void enrollNewFingerprint() {
           
           StaticJsonDocument<64> doc;
           doc["FingerID"] = newId; 
-
+          //doc["Template"] = "VEVTVF9GSU5HRVJQUklOVF9EQVRBXzEyMw==";
           String payload;
           serializeJson(doc, payload);
               
           displayMessage("Syncing to Server", "Please wait...", 0);
 
-          if (logToServer("/api/SensorData", payload)) { 
+          if (logToServer(FP_ENROLL_ENDPOINT, payload)) { 
               displayMessage("Server Synced!", "Enrolled!", 2000);
           } else {
               
@@ -796,7 +802,7 @@ uint8_t createAndStoreModel(uint16_t id) {
  * @param id The user's fingerprint ID.
  * @param timestamp The Unix timestamp of the attendance.
  */
-void logAttendanceOffline(uint16_t id, time_t timestamp) {
+void logAttendanceOffline(uint16_t id,  time_t timestamp) {
   File logFile = SD.open(OFFLINE_LOG_FILE, FILE_APPEND);
   if (logFile) {
     logFile.print(String(id) + "," + String(timestamp) + "\n");
@@ -813,14 +819,20 @@ void syncOfflineLogs() {
   lcd.setCursor(15, 1); 
   lcd.write(4);
   displayMessage("Syncing Offline ", "logs...", 0);
-  File logFile = SD.open(OFFLINE_LOG_FILE, FILE_READ);
-  if (!logFile) {
-    displayMessage("No offline logs", "to sync.", 1500);
-    return;
+ File logFile = SD.open(OFFLINE_LOG_FILE, FILE_READ);
+  if (!logFile || !logFile.size()) { 
+    if(logFile) logFile.close(); 
+    return; 
   }
 
+  displayMessage("Syncing Logs...", "", 1000);
   String tempLogName = "/temp_log.txt";
   File tempFile = SD.open(tempLogName, FILE_WRITE);
+  if(!tempFile) { 
+      displayMessage("Temp File Error", "", 2000);
+      logFile.close(); 
+      return; 
+  }
   bool allSynced = true;
 
   while (logFile.available()) {
@@ -832,6 +844,8 @@ void syncOfflineLogs() {
     if (commaIndex != -1) {
       uint16_t id = line.substring(0, commaIndex).toInt();
       time_t timestamp = (time_t)line.substring(commaIndex + 1).toInt();
+
+      time_t timestamp = (time_t)line.substring(secondComma + 1).toInt();
       DateTime entryTime(timestamp); 
       String timestampString = String(entryTime.year()) + "-" +
                                (entryTime.month() < 10 ? "0" : "") + String(entryTime.month()) + "-" +
