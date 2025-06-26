@@ -177,13 +177,9 @@ void setup() {
   
   // Initial WiFi connection attempt (non-blocking)
   displayMessage("Connecting WiFi", "Please wait...");
-  //setupWiFi(false); // false = don't start config portal on boot
+  setupWiFi(false); // false = don't start config portal on boot
 
-  WiFiManager wm;
-  wm.setConnectTimeout(20); 
-  wm.setConfigPortalBlocking(false); 
-  bool connected = wm.autoConnect("FingerprintSetupAP");
-  if (connected) {
+  if (WiFi.status() == WL_CONNECTED) {
     displayMessage("WiFi Connected!", WiFi.localIP().toString(), 2000);
     setenv("TZ", "EET-2EEST,M4.4.5/0,M10.5.5/1", 1);
     tzset(); 
