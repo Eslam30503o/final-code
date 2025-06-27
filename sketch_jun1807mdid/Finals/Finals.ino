@@ -56,6 +56,13 @@ const uint8_t LCD_BACKLIGHT_PIN = 13;
 #define DAYLIGHT_OFFSET_SEC (3600 * 1)                // Daylight saving offset (0 if not applicable)
 #define OFFLINE_LOG_FILE "/attendance_log.txt"
 
+// --- API ENDPOINTS ---
+#define ATTENDANCE_ENDPOINT "/api/Attendance/AttendanceStudentFinger"
+#define FP_ENROLL_ENDPOINT "/api/SensorData/Enroll"
+#define FP_ALL_ENDPOINT "/api/attendance/GetAllSubjects"
+#define FP_LAST_ID_ENDPOINT "/api/SensorData/last-id"
+#define FP_cLEAR_DATA_ENDPOINT "/api/SensorData/clear"
+
 // --- CONSTANTS AND TIMERS ---
 const uint32_t DEBOUNCE_DELAY = 50;        // 50 ms for button debouncing
 const uint32_t LONG_PRESS_DELAY = 1000;    // 1000 ms = 1 second for a long press
@@ -177,13 +184,9 @@ void setup() {
   
   // Initial WiFi connection attempt (non-blocking)
   displayMessage("Connecting WiFi", "Please wait...");
-  //setupWiFi(false); // false = don't start config portal on boot
+  setupWiFi(false); // false = don't start config portal on boot
 
-  WiFiManager wm;
-  wm.setConnectTimeout(20); 
-  wm.setConfigPortalBlocking(false); 
-  bool connected = wm.autoConnect("FingerprintSetupAP");
-  if (connected) {
+  if (WiFi.status() == WL_CONNECTED ) {
     displayMessage("WiFi Connected!", WiFi.localIP().toString(), 2000);
     setenv("TZ", "EET-2EEST,M4.4.5/0,M10.5.5/1", 1);
     tzset(); 
@@ -526,7 +529,7 @@ uint16_t fetchLastIdFromServer() {
   }
   
   HTTPClient http;
-  String url = String(SERVER_HOST) + "/api/SensorData/last-id";
+  String url = String(SERVER_HOST) + FP_LAST_ID_ENDPOINT;
   
   http.begin(url); 
 
@@ -558,7 +561,7 @@ bool syncAttendanceToServer(uint16_t id, String timestampString) {
     String payload;
     serializeJson(doc, payload);
 
-    return logToServer("/api/SensorData", payload);
+    return logToServer(ATTENDANCE_ENDPOINT, payload);
 }
 
 /**
@@ -735,7 +738,7 @@ void enrollNewFingerprint() {
               
           displayMessage("Syncing to Server", "Please wait...", 0);
 
-          if (logToServer("/api/SensorData", payload)) { 
+          if (logToServer(FP_ENROLL_ENDPOINT, payload)) { 
               displayMessage("Server Synced!", "Enrolled!", 2000);
           } else {
               
@@ -913,7 +916,7 @@ void attemptToClearAllData() {
   }
 
   HTTPClient http;
-  String url = String(SERVER_HOST) + "/api/SensorData/clear";
+  String url = String(SERVER_HOST) + FP_cLEAR_DATA_ENDPOINT;
   http.begin(url);
   int httpCode = http.POST("");
   http.end();
